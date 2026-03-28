@@ -13,6 +13,9 @@ import threading
 load_dotenv()
 TOKEN = os.getenv("TOKEN")
 
+# 👉 勉強VCの名前に含まれる文字（ここ変更OK）
+STUDY_VC_NAME = "勉強"
+
 intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
@@ -66,19 +69,19 @@ class StudyView(discord.ui.View):
         user = get_user(str(interaction.user.id), interaction.guild.id)
 
         if user["study_start"]:
-            await interaction.response.send_message("すでに勉強中", ephemeral=True)
+            await interaction.response.send_message("すでに勉強中です", ephemeral=True)
             return
 
         user["study_start"] = datetime.datetime.now().isoformat()
         save_data()
-        await interaction.response.send_message("📚 勉強開始")
+        await interaction.response.send_message("📚 勉強開始しました！")
 
     @discord.ui.button(label="⏹ 勉強終了", style=discord.ButtonStyle.red)
     async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
         user = get_user(str(interaction.user.id), interaction.guild.id)
 
         if not user["study_start"]:
-            await interaction.response.send_message("まだ開始してない", ephemeral=True)
+            await interaction.response.send_message("まだ勉強を開始していません", ephemeral=True)
             return
 
         start = datetime.datetime.fromisoformat(user["study_start"])
@@ -105,36 +108,35 @@ class StudyView(discord.ui.View):
         save_data()
 
         await interaction.response.send_message(
-            f"⏱ {minutes}分 / 🔥{user['streak']}日"
+            f"⏱ {minutes}分勉強しました！\n🔥 連続 {user['streak']}日"
         )
 
-# ===== パネル =====
-@bot.tree.command(name="panel")
+# ===== コマンド =====
+
+@bot.tree.command(name="panel", description="勉強開始・終了のボタンを表示します")
 async def panel(interaction: discord.Interaction):
     await interaction.response.send_message("📚 勉強パネル", view=StudyView())
 
-# ===== ステータス =====
-@bot.tree.command(name="status")
+@bot.tree.command(name="status", description="自分の勉強状況を表示します")
 async def status(interaction: discord.Interaction):
     user = get_user(str(interaction.user.id), interaction.guild.id)
 
-    embed = discord.Embed(title="📊 ステータス")
-    embed.add_field(name="時間", value=f"{user['total_minutes']}分")
+    embed = discord.Embed(title="📊 あなたのステータス")
+    embed.add_field(name="合計時間", value=f"{user['total_minutes']}分")
     embed.add_field(name="EXP", value=f"{user['exp']}")
-    embed.add_field(name="Lv", value=f"{get_level(user['exp'])}")
-    embed.add_field(name="連続", value=f"{user['streak']}日")
+    embed.add_field(name="レベル", value=f"Lv.{get_level(user['exp'])}")
+    embed.add_field(name="ストリーク", value=f"{user['streak']}日")
 
     await interaction.response.send_message(embed=embed)
 
-# ===== ランキング =====
-@bot.tree.command(name="rank")
+@bot.tree.command(name="rank", description="サーバー内の勉強ランキングを表示します")
 async def rank(interaction: discord.Interaction):
     gid = str(interaction.guild.id)
     users = data["users"].get(gid, {})
 
     sorted_users = sorted(users.items(), key=lambda x: x[1]["exp"], reverse=True)
 
-    embed = discord.Embed(title="🏆 ランキング")
+    embed = discord.Embed(title="🏆 勉強ランキング")
 
     for i, (uid, u) in enumerate(sorted_users[:10], 1):
         try:
@@ -143,17 +145,19 @@ async def rank(interaction: discord.Interaction):
         except:
             name = "Unknown"
 
+        if i == 1:
+            name = "👑 " + name
+
         embed.add_field(name=f"{i}位 {name}", value=f"{u['exp']}EXP", inline=False)
 
     await interaction.response.send_message(embed=embed)
 
-# ===== グラフ =====
-@bot.tree.command(name="graph")
+@bot.tree.command(name="graph", description="自分の勉強時間の推移をグラフで表示します")
 async def graph(interaction: discord.Interaction):
     user = get_user(str(interaction.user.id), interaction.guild.id)
 
     if not user["history"]:
-        await interaction.response.send_message("データなし")
+        await interaction.response.send_message("データがありません")
         return
 
     dates = list(user["history"].keys())
@@ -168,33 +172,10 @@ async def graph(interaction: discord.Interaction):
 
     await interaction.response.send_message(file=discord.File("graph.png"))
 
-# ===== VC勉強 =====
-voice_sessions = {}
-
-@bot.event
-async def on_voice_state_update(member, before, after):
-    uid = str(member.id)
-
-    if after.channel and not before.channel:
-        voice_sessions[uid] = datetime.datetime.now()
-
-    if before.channel and not after.channel:
-        if uid in voice_sessions:
-            start = voice_sessions[uid]
-            minutes = int((datetime.datetime.now() - start).total_seconds() / 60)
-
-            user = get_user(uid, member.guild.id)
-            user["exp"] += minutes
-            user["total_minutes"] += minutes
-
-            del voice_sessions[uid]
-            save_data()
-
-# ===== ランキングチャンネル設定 =====
-@bot.tree.command(name="setrankchannel")
+@bot.tree.command(name="setrankchannel", description="ランキング自動投稿チャンネルを設定（管理者のみ）")
 async def setrankchannel(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message("権限なし", ephemeral=True)
+        await interaction.response.send_message("管理者のみ使用できます", ephemeral=True)
         return
 
     gid = str(interaction.guild.id)
@@ -205,7 +186,31 @@ async def setrankchannel(interaction: discord.Interaction):
     data["guilds"][gid]["rank_channel"] = interaction.channel.id
     save_data()
 
-    await interaction.response.send_message("✅ 設定完了")
+    await interaction.response.send_message("✅ このチャンネルに毎日ランキングを投稿します")
+
+# ===== VC勉強（指定）=====
+voice_sessions = {}
+
+@bot.event
+async def on_voice_state_update(member, before, after):
+    uid = str(member.id)
+
+    # 入室（勉強VCのみ）
+    if after.channel and STUDY_VC_NAME in after.channel.name:
+        voice_sessions[uid] = datetime.datetime.now()
+
+    # 退出（勉強VCのみ）
+    if before.channel and STUDY_VC_NAME in before.channel.name:
+        if uid in voice_sessions:
+            start = voice_sessions[uid]
+            minutes = int((datetime.datetime.now() - start).total_seconds() / 60)
+
+            user = get_user(uid, member.guild.id)
+            user["exp"] += minutes
+            user["total_minutes"] += minutes
+
+            del voice_sessions[uid]
+            save_data()
 
 # ===== 今日ランキング =====
 def get_today_ranking(gid):
@@ -242,7 +247,7 @@ async def daily_ranking():
                 if not ranking:
                     continue
 
-                embed = discord.Embed(title="🏆 今日のランキング")
+                embed = discord.Embed(title="🏆 今日の勉強ランキング")
 
                 for i, (uid, minutes) in enumerate(ranking, 1):
                     try:
@@ -264,7 +269,7 @@ async def daily_ranking():
 
         await asyncio.sleep(60)
 
-# ===== Flask（24時間用）=====
+# ===== Flask（24時間）=====
 app = Flask(__name__)
 
 @app.route("/")
