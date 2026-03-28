@@ -1,44 +1,41 @@
 import os
 import discord
 from discord.ext import commands
-from discord import app_commands
-from dotenv import load_dotenv
-
 import json
 import datetime
 import matplotlib.pyplot as plt
 import asyncio
+from dotenv import load_dotenv
 
 # ===== .env読み込み =====
 load_dotenv()
+TOKEN = os.getenv("TOKEN")
 
-# ===== intents =====
+# ===== Intent =====
 intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
-intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ===== データ =====
 DATA_FILE = "data.json"
 
+# ===== データ =====
 def load_data():
     if not os.path.exists(DATA_FILE):
         return {"users": {}}
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
+    with open(DATA_FILE, "r") as f:
         return json.load(f)
 
 def save_data():
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f, indent=4)
 
 data = load_data()
 
-# ===== ユーザー管理 =====
+# ===== ユーザー取得 =====
 def get_user(uid, gid):
     gid = str(gid)
-    uid = str(uid)
 
     if gid not in data["users"]:
         data["users"][gid] = {}
@@ -49,7 +46,8 @@ def get_user(uid, gid):
             "study_start": None,
             "history": {},
             "streak": 0,
-            "last_study_date": None
+            "last_study_date": None,
+            "is_premium": False
         }
 
     return data["users"][gid][uid]
@@ -58,9 +56,6 @@ def get_user(uid, gid):
 def get_level(exp):
     return exp // 100 + 1
 
-# ===== VC記録 =====
-voice_sessions = {}
-
 # ===== UI =====
 class StudyView(discord.ui.View):
     def __init__(self):
@@ -68,8 +63,7 @@ class StudyView(discord.ui.View):
 
     @discord.ui.button(label="▶ 勉強開始", style=discord.ButtonStyle.green)
     async def start(self, interaction: discord.Interaction, button: discord.ui.Button):
-
-        user = get_user(interaction.user.id, interaction.guild.id)
+        user = get_user(str(interaction.user.id), interaction.guild.id)
 
         if user["study_start"]:
             await interaction.response.send_message("すでに勉強中！", ephemeral=True)
@@ -82,8 +76,7 @@ class StudyView(discord.ui.View):
 
     @discord.ui.button(label="⏹ 勉強終了", style=discord.ButtonStyle.red)
     async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
-
-        user = get_user(interaction.user.id, interaction.guild.id)
+        user = get_user(str(interaction.user.id), interaction.guild.id)
 
         if not user["study_start"]:
             await interaction.response.send_message("まだ開始してない！", ephemeral=True)
@@ -93,9 +86,16 @@ class StudyView(discord.ui.View):
         minutes = int((datetime.datetime.now() - start).total_seconds() / 60)
 
         before = get_level(user["exp"])
-        user["exp"] += minutes
+
+        # ===== プレミアムEXP =====
+        gain = minutes
+        if user["is_premium"]:
+            gain = int(gain * 1.5)
+
+        user["exp"] += gain
         after = get_level(user["exp"])
 
+        # ===== ストリーク =====
         today = str(datetime.date.today())
         yesterday = str(datetime.date.today() - datetime.timedelta(days=1))
 
@@ -106,70 +106,57 @@ class StudyView(discord.ui.View):
 
         user["last_study_date"] = today
 
+        # ===== 履歴 =====
         user["history"][today] = user["history"].get(today, 0) + minutes
 
         user["study_start"] = None
-
         save_data()
 
-        msg = f"⏱ {minutes}分\n合計: {user['exp']}分 Lv:{after}\n🔥 ストリーク:{user['streak']}"
+        msg = f"⏱ {minutes}分勉強！\n+{gain}EXP\n合計: {user['exp']}分 Lv:{after}\n🔥 {user['streak']}日連続"
 
         if after > before:
             msg += "\n🎉 レベルアップ！"
 
         await interaction.response.send_message(msg)
 
-# ===== 起動 =====
+# ===== イベント =====
 @bot.event
 async def on_ready():
     print(f"ログイン: {bot.user}")
-    try:
-        synced = await bot.tree.sync()
-        print(f"スラッシュ同期: {len(synced)}個")
-    except Exception as e:
-        print(e)
 
-# ===== panel =====
-@bot.tree.command(name="panel", description="勉強パネル")
+@bot.event
+async def setup_hook():
+    await bot.tree.sync()
+    bot.loop.create_task(daily_reset())
+
+# ===== コマンド =====
+@bot.tree.command(name="panel")
 async def panel(interaction: discord.Interaction):
     embed = discord.Embed(title="📚 勉強パネル", color=discord.Color.green())
     await interaction.response.send_message(embed=embed, view=StudyView())
 
-# ===== status =====
-@bot.tree.command(name="status", description="ステータス")
+@bot.tree.command(name="status")
 async def status(interaction: discord.Interaction):
-    user = get_user(interaction.user.id, interaction.guild.id)
+    user = get_user(str(interaction.user.id), interaction.guild.id)
     level = get_level(user["exp"])
 
-    embed = discord.Embed(title="📊 ステータス")
-    embed.add_field(name="時間", value=f"{user['exp']}分")
-    embed.add_field(name="Lv", value=level)
-    embed.add_field(name="連続", value=f"{user['streak']}日")
+    badge = "👑 " if user["is_premium"] else ""
+
+    embed = discord.Embed(title="📊 ステータス", color=discord.Color.blue())
+    embed.add_field(name="名前", value=f"{badge}{interaction.user.name}")
+    embed.add_field(name="合計時間", value=f"{user['exp']}分")
+    embed.add_field(name="レベル", value=f"Lv.{level}")
+    embed.add_field(name="連続日数", value=f"{user['streak']}日")
 
     await interaction.response.send_message(embed=embed)
 
-# ===== now =====
-@bot.tree.command(name="now", description="勉強中時間")
-async def now(interaction: discord.Interaction):
-    user = get_user(interaction.user.id, interaction.guild.id)
-
-    if not user["study_start"]:
-        await interaction.response.send_message("勉強してない")
-        return
-
-    start = datetime.datetime.fromisoformat(user["study_start"])
-    minutes = int((datetime.datetime.now() - start).total_seconds() / 60)
-
-    await interaction.response.send_message(f"{minutes}分経過")
-
-# ===== rank =====
-@bot.tree.command(name="rank", description="ランキング")
+@bot.tree.command(name="rank")
 async def rank(interaction: discord.Interaction):
-    users = data["users"].get(str(interaction.guild.id), {})
-
+    gid = str(interaction.guild.id)
+    users = data["users"].get(gid, {})
     sorted_users = sorted(users.items(), key=lambda x: x[1]["exp"], reverse=True)
 
-    embed = discord.Embed(title="🏆 ランキング")
+    embed = discord.Embed(title="🏆 ランキング", color=discord.Color.gold())
 
     for i, (uid, u) in enumerate(sorted_users[:10], 1):
         try:
@@ -178,62 +165,41 @@ async def rank(interaction: discord.Interaction):
         except:
             name = "Unknown"
 
+        if u.get("is_premium"):
+            name = "👑 " + name
+
         embed.add_field(name=f"{i}位 {name}", value=f"{u['exp']}分", inline=False)
 
     await interaction.response.send_message(embed=embed)
 
-# ===== graph =====
-@bot.tree.command(name="graph", description="グラフ")
-async def graph(interaction: discord.Interaction):
-    user = get_user(interaction.user.id, interaction.guild.id)
-
-    if not user["history"]:
-        await interaction.response.send_message("データなし")
+# ===== プレミアム管理 =====
+@bot.tree.command(name="premium_add")
+async def premium_add(interaction: discord.Interaction, member: discord.Member):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("権限なし", ephemeral=True)
         return
 
-    dates = list(user["history"].keys())
-    values = list(user["history"].values())
+    user = get_user(str(member.id), interaction.guild.id)
+    user["is_premium"] = True
+    save_data()
 
-    plt.figure()
-    plt.plot(dates, values, marker="o")
-    plt.xticks(rotation=45)
+    await interaction.response.send_message(f"{member.name} をプレミアムにしました 👑")
 
-    file = "graph.png"
-    plt.savefig(file)
-    plt.close()
+@bot.tree.command(name="premium_remove")
+async def premium_remove(interaction: discord.Interaction, member: discord.Member):
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message("権限なし", ephemeral=True)
+        return
 
-    await interaction.response.send_message(file=discord.File(file))
+    user = get_user(str(member.id), interaction.guild.id)
+    user["is_premium"] = False
+    save_data()
 
-# ===== VC =====
-@bot.event
-async def on_voice_state_update(member, before, after):
-    uid = str(member.id)
+    await interaction.response.send_message(f"{member.name} のプレミアム解除")
 
-    if after.channel and not before.channel:
-        voice_sessions[uid] = datetime.datetime.now()
-
-    if before.channel and not after.channel:
-        if uid in voice_sessions:
-            start = voice_sessions[uid]
-            minutes = int((datetime.datetime.now() - start).total_seconds() / 60)
-
-            user = get_user(uid, member.guild.id)
-            user["exp"] += minutes
-
-            del voice_sessions[uid]
-            save_data()
-
-# ===== 起動 =====
-from dotenv import load_dotenv
-import os
-
-load_dotenv()
-
-token = os.getenv("TOKEN")
-
+# ===== Flask（24時間化） =====
 from flask import Flask
 import threading
-import os
 
 app = Flask(__name__)
 
@@ -247,4 +213,18 @@ def run():
 
 threading.Thread(target=run).start()
 
-bot.run(token)
+# ===== 自動リセット =====
+async def daily_reset():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        now = datetime.datetime.now()
+
+        if now.hour == 0 and now.minute < 5:
+            data["users"] = {}
+            save_data()
+            print("ランキングリセット")
+
+        await asyncio.sleep(60)
+
+# ===== 起動 =====
+bot.run(TOKEN)
